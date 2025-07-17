@@ -1,27 +1,33 @@
-#include <iostream>
-#include <vector>
-#include <string>
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include <iostream>              // для cin, cout
+#include <vector>                // зберігати список юзерів
+#include <string>                // string — для логіна і пароля
+#include <winsock2.h>            // сокети Windows
+#include <ws2tcpip.h>            // inet_ntop і тд
 
-#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "ws2_32.lib")  // сокетна бібліотека
 
+#define PORT 8080                // порт сервера
+#define BUFFER_SIZE 1024         // розмір буфера для прийому
+
+// проста структура користувача
 struct User {
     std::string login;
     std::string password;
 };
 
+// список усіх юзерів
 std::vector<User> database;
 
+// перевірка на існування юзера
 bool registerUser(const std::string& login, const std::string& password) {
     for (const auto& user : database) {
-        if (user.login == login)
-            return false;
+        if (user.login == login) return false; // вже є такий
     }
     database.push_back({login, password});
     return true;
 }
 
+// логін перевірка
 bool loginUser(const std::string& login, const std::string& password) {
     for (const auto& user : database) {
         if (user.login == login && user.password == password)
@@ -31,83 +37,89 @@ bool loginUser(const std::string& login, const std::string& password) {
 }
 
 int main() {
-    WSADATA wsaData;
-    SOCKET serverSocket, clientSocket;
+    WSADATA wsaData;              // для старту Winsock
+    SOCKET serverSocket, clientSocket; // головний та клієнтський сокет
     sockaddr_in serverAddr, clientAddr;
     int clientLen = sizeof(clientAddr);
-    char buffer[1024] = {};
+    char buffer[BUFFER_SIZE];     // буфер під вхідні дані
 
+    // ініціалізація сокетів
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cerr << "Ошибка инициализации Winsock\n";
+        std::cerr << "WSA не стартанув\n";
         return 1;
     }
 
+    // створюємо TCP-сокет
     serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket == INVALID_SOCKET) {
-        std::cerr << "Ошибка создания сокета\n";
+        std::cerr << "Не вийшло створити серверний сокет\n";
         WSACleanup();
         return 1;
     }
 
+    // налаштовуємо адресу сервера
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(8080);
+    serverAddr.sin_addr.s_addr = INADDR_ANY; // слухаємо на всіх інтерфейсах
+    serverAddr.sin_port = htons(PORT);
 
+    // прив’язка до порта
     if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        std::cerr << "Ошибка привязки\n";
+        std::cerr << "Помилка прив'язки до порта\n";
         closesocket(serverSocket);
         WSACleanup();
         return 1;
     }
 
+    // слухаємо з'єднання
     listen(serverSocket, SOMAXCONN);
-    std::cout << "Сервер запущен на порту 8080\n";
+    std::cout << "Сервер працює на порту " << PORT << "\n";
 
+    // нескінченний цикл прийому підключень
     while (true) {
         clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientLen);
         if (clientSocket == INVALID_SOCKET) {
-            std::cerr << "Ошибка при подключении клиента\n";
+            std::cerr << "Клієнт не підключився\n";
             continue;
         }
 
-        int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+        memset(buffer, 0, BUFFER_SIZE); // чистимо буфер
+        int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE - 1, 0);
         if (bytesReceived <= 0) {
             closesocket(clientSocket);
             continue;
         }
         buffer[bytesReceived] = '\0';
 
-        std::string input(buffer);
+        std::string request(buffer);
         std::string response;
 
-        size_t pos1 = input.find(' ');
-        size_t pos2 = input.find(' ', pos1 + 1);
-        if (pos1 == std::string::npos || pos2 == std::string::npos) {
-            response = "Некорректный формат запроса";
+        // розділяємо на частини
+        size_t p1 = request.find(' ');
+        size_t p2 = request.find(' ', p1 + 1);
+        if (p1 == std::string::npos || p2 == std::string::npos) {
+            response = "Некоректний запит";
         } else {
-            std::string command = input.substr(0, pos1);
-            std::string login = input.substr(pos1 + 1, pos2 - pos1 - 1);
-            std::string password = input.substr(pos2 + 1);
+            std::string command = request.substr(0, p1);
+            std::string login = request.substr(p1 + 1, p2 - p1 - 1);
+            std::string password = request.substr(p2 + 1);
 
             if (command == "REGISTER") {
-                if (registerUser(login, password))
-                    response = "Регистрация успешна";
-                else
-                    response = "Пользователь уже существует";
+                response = registerUser(login, password) ?
+                    "Реєстрація успішна" : "Такий юзер вже є";
             } else if (command == "LOGIN") {
-                if (loginUser(login, password))
-                    response = "Вход выполнен";
-                else
-                    response = "Неверные данные";
+                response = loginUser(login, password) ?
+                    "Вхід успішний" : "Невірний логін або пароль";
             } else {
-                response = "Неизвестная команда";
+                response = "Команда невідома";
             }
         }
 
-        send(clientSocket, response.c_str(), response.size(), 0);
-        closesocket(clientSocket);
+        // надсилаємо відповідь
+        send(clientSocket, response.c_str(), response.length(), 0);
+        closesocket(clientSocket); // закриваємо клієнта
     }
 
+    // закриваємо сервер
     closesocket(serverSocket);
     WSACleanup();
     return 0;
